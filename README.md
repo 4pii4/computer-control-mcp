@@ -41,6 +41,30 @@ Then run the server with:
 computer-control-mcp # instead of uvx computer-control-mcp, so you can use the latest version, also you can `uv cache clean` to clear the cache and `uvx` again to use latest version.
 ```
 
+### KDE Plasma Wayland
+
+This fork supports native KDE Plasma Wayland sessions:
+
+- Spectacle captures the full desktop and active windows.
+- KWin metadata and `kdotool` provide native window listing and activation.
+- KWin's EIS remote-desktop interface provides precise mouse and keyboard input
+  in logical desktop coordinates without relying on XWayland.
+- Fractionally scaled screenshots are normalized to KWin's logical coordinate
+  space so OCR coordinates can be clicked directly.
+
+On Fedora, install and configure the required system tools once:
+
+```bash
+./scripts/setup-wayland-fedora.sh
+```
+
+Then run the server normally. The setup helper builds a small user-local EIS
+client at `~/.local/bin/computer-control-kwin-ei`; no root input daemon remains
+running.
+
+Other Wayland compositors need compositor-specific window-management support;
+the native window backend in this fork currently targets KDE Plasma/KWin.
+
 ## Features
 
 - Control mouse movements and clicks

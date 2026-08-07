@@ -21,15 +21,24 @@ from typing import Union
 import threading
 
 # --- Auto-install dependencies if needed ---
-import pyautogui
+from . import wayland
+
+IS_WAYLAND = sys.platform.startswith("linux") and wayland.is_wayland_session()
+
+if IS_WAYLAND:
+    pyautogui = None
+    gw = None
+else:
+    import pyautogui
+
+    try:
+        import pywinctl as gw
+    except (NotImplementedError, ImportError):
+        import pygetwindow as gw
+
 from mcp.server.fastmcp import FastMCP, Image
 import mss
 from PIL import Image as PILImage
-
-try:
-    import pywinctl as gw
-except (NotImplementedError, ImportError):
-    import pygetwindow as gw
 from fuzzywuzzy import fuzz, process
 
 import cv2
@@ -364,7 +373,10 @@ def _find_matching_window(
 def click_screen(x: int, y: int) -> str:
     """Click at the specified screen coordinates."""
     try:
-        pyautogui.click(x=x, y=y)
+        if IS_WAYLAND:
+            wayland.click_screen(x, y)
+        else:
+            pyautogui.click(x=x, y=y)
         return f"Successfully clicked at coordinates ({x}, {y})"
     except Exception as e:
         return f"Error clicking at coordinates ({x}, {y}): {str(e)}"
@@ -374,7 +386,10 @@ def click_screen(x: int, y: int) -> str:
 def get_screen_size() -> Dict[str, Any]:
     """Get the current screen resolution."""
     try:
-        width, height = pyautogui.size()
+        if IS_WAYLAND:
+            width, height = wayland.get_screen_size()
+        else:
+            width, height = pyautogui.size()
         return {
             "width": width,
             "height": height,
@@ -388,7 +403,10 @@ def get_screen_size() -> Dict[str, Any]:
 def type_text(text: str) -> str:
     """Type the specified text at the current cursor position."""
     try:
-        pyautogui.typewrite(text)
+        if IS_WAYLAND:
+            wayland.type_text(text)
+        else:
+            pyautogui.typewrite(text)
         return f"Successfully typed text: {text}"
     except Exception as e:
         return f"Error typing text: {str(e)}"
@@ -418,6 +436,21 @@ def take_screenshot(
         Returns a single screenshot as MCP Image object. "content type image not supported" means preview isnt supported but Image object is there and returned successfully.
     """
     try:
+        if IS_WAYLAND:
+            screenshot = wayland.take_screenshot(
+                title_pattern=title_pattern,
+                use_regex=use_regex,
+                threshold=threshold,
+            )
+            temp_dir = Path(tempfile.mkdtemp())
+            filepath, _ = save_image_to_downloads(
+                screenshot, prefix="screenshot", directory=temp_dir
+            )
+            image = Image(filepath)
+            if save_to_downloads:
+                shutil.copy(filepath, get_downloads_dir())
+            return image
+
         all_windows = gw.getAllWindows()
 
         # Convert to list of dictionaries for _find_matching_window
@@ -626,51 +659,53 @@ def take_screenshot_with_ocr(
         Returns a list of UI elements as List[Tuple[List[List[int]], str, float]] where each tuple is [[4 corners of box], text, confidence], "content type image not supported" means preview isnt supported but Image object is there.
     """
     try:
-        all_windows = gw.getAllWindows()
-
-        # Convert to list of dictionaries for _find_matching_window
-        windows = []
-        for window in all_windows:
-            if window.title:  # Only include windows with titles
-                windows.append(
-                    {
-                        "title": window.title,
-                        "window_obj": window,  # Store the actual window object
-                    }
-                )
-
-        log(f"Found {len(windows)} windows")
-        window = _find_matching_window(windows, title_pattern, use_regex, threshold)
-        window = window["window_obj"] if window else None
-
-        # Store the currently active window
-
-        # Take the screenshot
-        if not window:
-            log("No matching window found, taking screenshot of entire screen")
-            screenshot = _mss_screenshot()
+        if IS_WAYLAND:
+            screenshot = wayland.take_screenshot(
+                title_pattern=title_pattern,
+                use_regex=use_regex,
+                threshold=threshold,
+            )
         else:
-            current_active_window = gw.getActiveWindow()
-            log(f"Taking screenshot of window: {window.title}")
-            # Activate the window and wait for it to be fully in focus
-            try:
-                window.activate()
-                pyautogui.sleep(0.5)  # Wait for 0.5 seconds to ensure window is active
-                screenshot = _mss_screenshot(
-                    region=(window.left, window.top, window.width, window.height)
-                )
-                # Restore the previously active window
-                if current_active_window:
-                    try:
-                        current_active_window.activate()
-                        pyautogui.sleep(
-                            0.2
-                        )  # Wait a bit to ensure previous window is restored
-                    except Exception as e:
-                        log(f"Error restoring previous window: {str(e)}")
-            except Exception as e:
-                log(f"Error taking screenshot of window: {str(e)}")
-                return f"Error taking screenshot of window: {str(e)}"
+            all_windows = gw.getAllWindows()
+            windows = []
+            for window in all_windows:
+                if window.title:
+                    windows.append(
+                        {"title": window.title, "window_obj": window}
+                    )
+
+            log(f"Found {len(windows)} windows")
+            window = _find_matching_window(
+                windows, title_pattern, use_regex, threshold
+            )
+            window = window["window_obj"] if window else None
+
+            if not window:
+                log("No matching window found, taking screenshot of entire screen")
+                screenshot = _mss_screenshot()
+            else:
+                current_active_window = gw.getActiveWindow()
+                log(f"Taking screenshot of window: {window.title}")
+                try:
+                    window.activate()
+                    pyautogui.sleep(0.5)
+                    screenshot = _mss_screenshot(
+                        region=(
+                            window.left,
+                            window.top,
+                            window.width,
+                            window.height,
+                        )
+                    )
+                    if current_active_window:
+                        try:
+                            current_active_window.activate()
+                            pyautogui.sleep(0.2)
+                        except Exception as e:
+                            log(f"Error restoring previous window: {str(e)}")
+                except Exception as e:
+                    log(f"Error taking screenshot of window: {str(e)}")
+                    return f"Error taking screenshot of window: {str(e)}"
 
         # Create temp directory
         temp_dir = Path(tempfile.mkdtemp())
@@ -753,7 +788,10 @@ def take_screenshot_with_ocr(
 def move_mouse(x: int, y: int) -> str:
     """Move the mouse to the specified screen coordinates."""
     try:
-        pyautogui.moveTo(x=x, y=y)
+        if IS_WAYLAND:
+            wayland.move_mouse(x, y)
+        else:
+            pyautogui.moveTo(x=x, y=y)
         return f"Successfully moved mouse to coordinates ({x}, {y})"
     except Exception as e:
         return f"Error moving mouse to coordinates ({x}, {y}): {str(e)}"
@@ -763,7 +801,10 @@ def move_mouse(x: int, y: int) -> str:
 def mouse_down(button: str = "left") -> str:
     """Hold down a mouse button ('left', 'right', 'middle')."""
     try:
-        pyautogui.mouseDown(button=button)
+        if IS_WAYLAND:
+            wayland.mouse_down(button)
+        else:
+            pyautogui.mouseDown(button=button)
         return f"Held down {button} mouse button"
     except Exception as e:
         return f"Error holding {button} mouse button: {str(e)}"
@@ -773,7 +814,10 @@ def mouse_down(button: str = "left") -> str:
 def mouse_up(button: str = "left") -> str:
     """Release a mouse button ('left', 'right', 'middle')."""
     try:
-        pyautogui.mouseUp(button=button)
+        if IS_WAYLAND:
+            wayland.mouse_up(button)
+        else:
+            pyautogui.mouseUp(button=button)
         return f"Released {button} mouse button"
     except Exception as e:
         return f"Error releasing {button} mouse button: {str(e)}"
@@ -797,6 +841,16 @@ async def drag_mouse(
         Success or error message
     """
     try:
+        if IS_WAYLAND:
+            await asyncio.to_thread(
+                wayland.drag_mouse,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                duration,
+            )
+            return f"Successfully dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
         # First move to the starting position
         pyautogui.moveTo(x=from_x, y=from_y)
         # Then drag to the destination
@@ -808,7 +862,6 @@ async def drag_mouse(
         return f"Error dragging from ({from_x}, {from_y}) to ({to_x}, {to_y}): {str(e)}"
 
 
-import pyautogui
 from typing import Union, List
 
 
@@ -816,7 +869,10 @@ from typing import Union, List
 def key_down(key: str) -> str:
     """Hold down a specific keyboard key until released."""
     try:
-        pyautogui.keyDown(key)
+        if IS_WAYLAND:
+            wayland.key_down(key)
+        else:
+            pyautogui.keyDown(key)
         return f"Held down key: {key}"
     except Exception as e:
         return f"Error holding key {key}: {str(e)}"
@@ -826,7 +882,10 @@ def key_down(key: str) -> str:
 def key_up(key: str) -> str:
     """Release a specific keyboard key."""
     try:
-        pyautogui.keyUp(key)
+        if IS_WAYLAND:
+            wayland.key_up(key)
+        else:
+            pyautogui.keyUp(key)
         return f"Released key: {key}"
     except Exception as e:
         return f"Error releasing key {key}: {str(e)}"
@@ -849,6 +908,14 @@ def press_keys(keys: Union[str, List[Union[str, List[str]]]]) -> str:
         press_keys([["ctrl", "c"], ["alt", "tab"]])
     """
     try:
+        if IS_WAYLAND:
+            if not isinstance(keys, (str, list)):
+                return "Invalid input: must be str or list"
+            wayland.press_keys(keys)
+            if isinstance(keys, str):
+                return f"Pressed single key: {keys}"
+            return f"Successfully pressed keys sequence: {keys}"
+
         if isinstance(keys, str):
             # Single key
             pyautogui.press(keys)
@@ -877,6 +944,8 @@ def press_keys(keys: Union[str, List[Union[str, List[str]]]]) -> str:
 def list_windows() -> List[Dict[str, Any]]:
     """List all open windows on the system."""
     try:
+        if IS_WAYLAND:
+            return wayland.list_windows()
         windows = gw.getAllWindows()
         result = []
         for window in windows:
@@ -944,6 +1013,11 @@ def activate_window(
         Success or error message
     """
     try:
+        if IS_WAYLAND:
+            title = wayland.activate_window(
+                title_pattern, use_regex, threshold
+            )
+            return f"Successfully activated window: '{title}'"
         # Get all windows
         all_windows = gw.getAllWindows()
 
@@ -981,7 +1055,8 @@ def activate_window(
 
 def main():
     """Main entry point for the MCP server."""
-    pyautogui.FAILSAFE = True
+    if not IS_WAYLAND:
+        pyautogui.FAILSAFE = True
 
     if WGC_AVAILABLE:
         log("Windows Graphics Capture API is available for enhanced window capture")
