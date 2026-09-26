@@ -214,6 +214,18 @@ computer-control-mcp
 python -m pytest
 ```
 
+On KDE Plasma Wayland, run the real desktop end-to-end scenario instead of
+mocking the compositor interfaces:
+
+```bash
+uv run python scripts/e2e-kde-wayland.py
+```
+
+The scenario launches a disposable Konsole window and controls it through the
+stdio MCP server. It writes a repeatable evidence bundle containing a JSON
+report, screenshots, OCR output, and the exact received keyboard input under
+`artifacts/kde-wayland-e2e/`.
+
 ## API Reference
 
 See the [API Reference](docs/api.md) for detailed information about the available functions and classes.
